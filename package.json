@@ -1,0 +1,24 @@
+{
+	"name": "obsidian-jump-to-same-par",
+	"version": "0.2.1",
+	"description": "Aligne le paragraphe cliqué et son équivalent dans l'autre version d'un texte ouverte en vue scindée",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"test": "node --test tests/*.test.mjs"
+	},
+	"keywords": [],
+	"author": "Matthieu Thomas",
+	"license": "MIT",
+	"devDependencies": {
+		"@codemirror/state": "6.5.0",
+		"@codemirror/view": "6.38.6",
+		"@types/node": "^20.0.0",
+		"builtin-modules": "^3.3.0",
+		"esbuild": "^0.20.0",
+		"obsidian": "latest",
+		"tslib": "2.4.0",
+		"typescript": "^5.0.0"
+	}
+}

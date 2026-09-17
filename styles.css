@@ -1,0 +1,31 @@
+/* Surlignage fugace des deux paragraphes que l'alignement vient d'apparier (durée : voir highlight.ts). */
+.cm-line.jump-to-same-par-flash {
+	animation: jump-to-same-par-flash 1.5s ease-out;
+}
+
+@keyframes jump-to-same-par-flash {
+	from {
+		background-color: var(--text-highlight-bg);
+	}
+	to {
+		background-color: transparent;
+	}
+}
+
+/* Les fonds des éléments de la ligne (code en ligne, surlignage…) se peignent par-dessus le
+   surlignage et y feraient des trous : ils s'effacent le temps du flash, puis reviennent. Sans
+   image-clé d'arrivée, l'animation retrouve la couleur normale de chacun, sans avoir à les énumérer. */
+.cm-line.jump-to-same-par-flash * {
+	animation: jump-to-same-par-through 1.5s ease-out;
+}
+
+@keyframes jump-to-same-par-through {
+	from {
+		background-color: transparent;
+	}
+}
+
+/* Bouton d'en-tête des deux volets dont le défilement est lié. */
+.view-action.jump-to-same-par-sync-button {
+	color: var(--interactive-accent);
+}
