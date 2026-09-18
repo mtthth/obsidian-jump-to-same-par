@@ -60,11 +60,23 @@ export function normalize(text: string): string {
 	);
 }
 
-/** Les lignes qui portent du texte, frontmatter exclu. */
+/** Les lignes qui portent du texte, frontmatter et commentaires exclus. */
 export function extractUnits(lines: readonly string[]): TextUnit[] {
 	const units: TextUnit[] = [];
+	// Un commentaire Obsidian (%% … %%) peut courir sur plusieurs lignes, mais pas dans un bloc de code.
+	let inComment = false;
+	let inCode = false;
 	for (let line = frontmatterEnd(lines); line < lines.length; line++) {
-		const text = normalize(lines[line]);
+		let raw = lines[line];
+		if (!inComment && /^\s*(?:```|~~~)/.test(raw)) inCode = !inCode;
+		else if (!inCode) {
+			// De part et d'autre de chaque %%, texte et commentaire alternent ; un %% dans du code en ligne
+			// n'en délimite aucun.
+			const pieces = raw.replace(/`[^`]*`/g, (code) => code.replace(/%%/g, " ")).split("%%");
+			raw = pieces.filter((_, k) => k % 2 === (inComment ? 1 : 0)).join(" ");
+			if (pieces.length % 2 === 0) inComment = !inComment;
+		}
+		const text = normalize(raw);
 		if (text) units.push({ line, grams: trigrams(text) });
 	}
 	return units;

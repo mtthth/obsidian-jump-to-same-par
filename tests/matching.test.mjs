@@ -48,6 +48,32 @@ test("extractUnits saute le frontmatter et les lignes sans texte", () => {
 	);
 });
 
+test("extractUnits ignore les commentaires sur plusieurs lignes, pas les %% du code", () => {
+	const lines = [
+		"Premier paragraphe.",
+		"%%",
+		"à reprendre : trop long",
+		"%%",
+		"Deuxième %%note%% paragraphe.",
+		"Troisième %% début d'une note",
+		"qui continue",
+		"et finit %% quatrième.",
+		"```",
+		'printf("100 %%");',
+		"```",
+		"Le code `%%` ne commente rien.",
+		"Dernier paragraphe.",
+	];
+	const units = extractUnits(lines);
+	assert.deepEqual(
+		units.map((u) => u.line),
+		[0, 4, 5, 7, 9, 11, 12]
+	);
+	const gramsOf = (text) => extractUnits([text])[0].grams;
+	assert.deepEqual(units[2].grams, gramsOf("Troisième"));
+	assert.deepEqual(units[3].grams, gramsOf("quatrième."));
+});
+
 test("unitIndexAt prend la ligne visée, sinon la plus proche", () => {
 	const units = extractUnits(["a", "", "", "b", "", "c"]);
 	assert.equal(unitIndexAt(units, 0), 0);
