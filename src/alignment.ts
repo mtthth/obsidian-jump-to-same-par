@@ -1,10 +1,10 @@
 import { EditorView } from "@codemirror/view";
+import { counterpartY, PaneBounds } from "./panes";
 
 /** Une ligne à l'écran, et le volet qui l'affiche, en pixels dans le repère de la fenêtre. */
 interface Placement {
 	top: number;
-	paneTop: number;
-	paneBottom: number;
+	pane: PaneBounds;
 }
 
 // Hors de la zone rendue, CodeMirror estime la hauteur des lignes ; et le défilement peut buter en
@@ -23,24 +23,21 @@ export async function alignLines(
 
 		// Le début d'un long paragraphe peut être sorti du volet : on vise alors le haut du volet, plutôt
 		// que d'envoyer hors de vue un équivalent peut-être plus court.
-		const anchor = Math.max(from.top, from.paneTop);
-		// Côte à côte, même hauteur d'écran ; l'un au-dessus de l'autre, même distance au haut du volet.
-		const sideBySide = from.paneTop < to.paneBottom && to.paneTop < from.paneBottom;
-		const wanted = sideBySide ? anchor : to.paneTop + (anchor - from.paneTop);
-
-		const delta = to.top - wanted;
+		const anchor = Math.max(from.top, from.pane.top);
+		const delta = to.top - counterpartY(anchor, from.pane, to.pane, target.defaultLineHeight);
 		if (Math.abs(delta) < 1) return;
-		// L'autre texte en butée (début ou fin du document) : c'est ce texte-ci qui se déplace.
-		if (Math.abs(scrollBy(target, delta)) < 1 && Math.abs(scrollBy(source, -delta)) < 1) return;
+		if (Math.abs(scrollBy(target, delta)) >= 1) continue;
+		// L'autre texte en butée (début ou fin du document) : c'est ce texte-ci qui vient en face du sien.
+		const back = from.top - counterpartY(to.top, to.pane, from.pane, source.defaultLineHeight);
+		if (Math.abs(scrollBy(source, back)) < 1) return;
 	}
 }
 
 /** Mesure une fois que CodeMirror a pris en compte le dernier défilement, hauteurs de lignes comprises. */
 function measure(view: EditorView, pos: number): Promise<Placement> {
 	const read = (v: EditorView): Placement => {
-		const pane = v.scrollDOM.getBoundingClientRect();
 		const line = v.lineBlockAt(Math.min(pos, v.state.doc.length));
-		return { top: v.documentTop + line.top, paneTop: pane.top, paneBottom: pane.bottom };
+		return { top: v.documentTop + line.top, pane: v.scrollDOM.getBoundingClientRect() };
 	};
 	return new Promise((resolve) => {
 		// Une vue fermée entre-temps ne rappellerait jamais : on mesure alors directement.

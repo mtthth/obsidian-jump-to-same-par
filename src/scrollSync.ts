@@ -2,6 +2,7 @@ import { Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { flashLines } from "./highlight";
 import { alignmentQuality, alignUnits, extractUnits } from "./matching";
+import { counterpartY } from "./panes";
 
 /**
  * Les lignes pleines qui entourent `line` : le paragraphe, au sens où `extractUnits` découpe le texte
@@ -229,9 +230,7 @@ export class ScrollSync {
 
 		const offset = from.height * readingRatio(from);
 		const { position, focus } = this.map(from, to, from.scrollTop + offset - from.contentOffset);
-		// Côte à côte, même hauteur d'écran ; l'un au-dessus de l'autre, même distance au haut du volet.
-		const sideBySide = from.top < to.bottom && to.top < from.bottom;
-		const screenY = sideBySide ? Math.min(Math.max(from.top + offset, to.top), to.bottom) : to.top + offset;
+		const screenY = counterpartY(from.top + offset, from, to, follower.defaultLineHeight);
 		return {
 			scrollTop: Math.min(Math.max(to.top + to.contentOffset + position - screenY, 0), to.maxScroll),
 			focus: focus < 0 ? null : this.anchors.positions[focus],
