@@ -1,6 +1,6 @@
 import { Editor, MarkdownView, Notice, Plugin, TFile } from "obsidian";
 import { EditorView, ViewPlugin } from "@codemirror/view";
-import { alignLines } from "./alignment";
+import { alignLines, revealLine } from "./alignment";
 import { flashLines, highlightField } from "./highlight";
 import {
 	extractUnits,
@@ -193,8 +193,14 @@ export default class JumpToSameParPlugin extends Plugin {
 		// Les unités comptent les lignes à partir de 0, CodeMirror à partir de 1.
 		const sourceLine = sourceUnits[match.sourceFrom].line + 1;
 		const targetLine = units[match.targetFrom].line + 1;
-		const align = () =>
-			alignLines(source, source.state.doc.line(sourceLine).from, target, target.state.doc.line(targetLine).from);
+		const sourcePos = source.state.doc.line(sourceLine).from;
+		const targetPos = target.state.doc.line(targetLine).from;
+		const align = async () => {
+			// Lancée au clavier, la commande part du curseur, qui a pu sortir du volet : comme toute commande
+			// d'édition, on le ramène d'abord à l'écran.
+			await revealLine(source, pos);
+			await alignLines(source, sourcePos, target, targetPos);
+		};
 		// Le défilement simultané de ces deux volets ne doit pas défaire l'alignement pendant qu'il se fait.
 		const session = this.activeSync?.session;
 		await (session?.involves(source) && session.involves(target) ? session.suspend(align) : align());
