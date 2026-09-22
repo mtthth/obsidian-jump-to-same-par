@@ -25,7 +25,36 @@
 	}
 }
 
-/* Bouton d'en-tête des deux volets dont le défilement est lié. */
-.view-action.jump-to-same-par-sync-button {
+/* Bouton d'en-tête des deux volets liés : défilement simultané, ou différences montrées. */
+.view-action.jump-to-same-par-active-button {
 	color: var(--interactive-accent);
+}
+
+/* Différences, à la git : en rouge ce qui disparaît d'une version à l'autre, en vert ce qui apparaît, en
+   jaune les paragraphes remaniés. Le liseré tient dans une ombre intérieure : une bordure décalerait le
+   texte des lignes marquées. */
+.cm-line.jump-to-same-par-diff-removed {
+	background-color: rgba(var(--color-red-rgb, 233, 49, 71), 0.08);
+	box-shadow: inset 3px 0 0 0 var(--color-red);
+}
+
+.cm-line.jump-to-same-par-diff-added {
+	background-color: rgba(var(--color-green-rgb, 8, 185, 78), 0.08);
+	box-shadow: inset 3px 0 0 0 var(--color-green);
+}
+
+.cm-line.jump-to-same-par-diff-changed {
+	background-color: rgba(var(--color-yellow-rgb, 224, 222, 113), 0.08);
+	box-shadow: inset 3px 0 0 0 var(--color-yellow);
+}
+
+/* Les mots qui changent à l'intérieur d'un paragraphe remanié. */
+.jump-to-same-par-diff-word-removed {
+	background-color: rgba(var(--color-red-rgb, 233, 49, 71), 0.25);
+	border-radius: 3px;
+}
+
+.jump-to-same-par-diff-word-added {
+	background-color: rgba(var(--color-green-rgb, 8, 185, 78), 0.25);
+	border-radius: 3px;
 }
