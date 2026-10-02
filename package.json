@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-jump-to-same-par",
-	"version": "0.2.1",
+	"version": "0.3.0",
 	"description": "Aligne le paragraphe cliqué et son équivalent dans l'autre version d'un texte ouverte en vue scindée",
 	"main": "main.js",
 	"scripts": {

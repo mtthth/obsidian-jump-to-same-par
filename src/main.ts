@@ -1,9 +1,9 @@
-import { Editor, MarkdownView, Notice, Plugin, TFile } from "obsidian";
+import { Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { alignLines, revealLine } from "./alignment";
-import { Diff } from "./diff";
 import { diffField } from "./diffMarks";
 import { DiffSession } from "./diffSession";
+import { DEFAULT_LANGUAGE, isLanguage, Language, Strings, strings } from "./i18n";
 import { flashLines, highlightField } from "./highlight";
 import {
 	extractUnits,
@@ -16,9 +16,9 @@ import {
 } from "./matching";
 import { Anchors, anchorsBetween, ScrollSync } from "./scrollSync";
 
-const ALIGN_TITLE = "Aligner les paragraphes";
-const SYNC_TITLE = "Défilement simultané";
-const DIFF_TITLE = "Montrer les différences";
+interface Settings {
+	language: Language;
+}
 
 // Obsidian n'expose pas officiellement la vue CodeMirror 6 sous-jacente sur Editor, mais
 // `editor.cm` est l'accès de fait stable utilisé par l'écosystème des plugins pour l'obtenir.
@@ -55,31 +55,45 @@ function inReadingOrder(a: NoteEditor, b: NoteEditor): [NoteEditor, NoteEditor] 
 	return before ? [a, b] : [b, a];
 }
 
-/** « 8 paragraphes modifiés, 1 ajouté, 1 supprimé ». */
-function summary(diff: Diff): string {
-	const counts: [number, string][] = [
-		[diff.changed, "modifié"],
-		[diff.added, "ajouté"],
-		[diff.removed, "supprimé"],
-	];
-	const parts = counts
-		.filter(([count]) => count > 0)
-		.map(([count, word], k) => {
-			const plural = count > 1 ? "s" : "";
-			// Le nom ne se dit qu'une fois, en tête : « 8 paragraphes modifiés, 1 ajouté ».
-			return `${count}${k === 0 ? ` paragraphe${plural}` : ""} ${word}${plural}`;
-		});
-	return parts.length === 0 ? "Les deux textes sont identiques" : parts.join(", ");
-}
-
 export default class JumpToSameParPlugin extends Plugin {
 	// Le clic droit ne déplace pas le curseur : on retient, par éditeur, la position cliquée pour aligner
 	// le paragraphe visé plutôt que celui où se trouve le curseur.
 	private rightClicks = new WeakMap<EditorView, { pos: number; time: number }>();
 	private activeSync: ActivePair<ScrollSync> | null = null;
 	private activeDiff: ActivePair<DiffSession> | null = null;
+	readonly prefs: Settings = { language: DEFAULT_LANGUAGE };
+	// Les commandes déjà enregistrées, pour en changer le nom quand la langue change.
+	private commands: { name: (t: Strings) => string; command: { name: string } }[] = [];
 
-	onload() {
+	get t(): Strings {
+		return strings(this.prefs.language);
+	}
+
+	async setLanguage(language: Language) {
+		this.prefs.language = language;
+		await this.saveData(this.prefs);
+		for (const { name, command } of this.commands) command.name = name(this.t);
+	}
+
+	/** Enregistre une commande dont le nom dépend de la langue. */
+	private addLocalizedCommand(id: string, name: (t: Strings) => string, editorCallback: (view: EditorView) => void) {
+		const command = this.addCommand({
+			id,
+			name: name(this.t),
+			editorCallback: (editor: Editor) => {
+				const view = getCmView(editor);
+				if (view) editorCallback(view);
+			},
+		});
+		this.commands.push({ name, command });
+	}
+
+	async onload() {
+		const saved: unknown = await this.loadData();
+		const language = (saved as Partial<Settings> | null)?.language;
+		if (isLanguage(language)) this.prefs.language = language;
+		this.addSettingTab(new SettingTab(this));
+
 		const rightClicks = this.rightClicks;
 		this.registerEditorExtension([
 			highlightField,
@@ -100,49 +114,16 @@ export default class JumpToSameParPlugin extends Plugin {
 			}),
 		]);
 
-		this.addCommand({
-			id: "align-paragraphs",
-			name: ALIGN_TITLE,
-			editorCallback: (editor: Editor) => {
-				const view = getCmView(editor);
-				if (view) void this.alignFrom(view, view.state.selection.main.head);
-			},
+		this.addLocalizedCommand("align-paragraphs", (t) => t.alignTitle, (view) => {
+			void this.alignFrom(view, view.state.selection.main.head);
 		});
-
-		this.addCommand({
-			id: "toggle-scroll-sync",
-			name: `${SYNC_TITLE} (activer ou désactiver)`,
-			editorCallback: (editor: Editor) => {
-				const view = getCmView(editor);
-				if (view) this.toggleSync(view);
-			},
+		this.addLocalizedCommand("toggle-scroll-sync", (t) => t.toggleSyncCommand, (view) => this.toggleSync(view));
+		this.addLocalizedCommand("toggle-differences", (t) => t.toggleDiffCommand, (view) => this.toggleDiff(view));
+		this.addLocalizedCommand("next-difference", (t) => t.nextDifference, (view) => {
+			void this.goToChange(view, 1);
 		});
-
-		this.addCommand({
-			id: "toggle-differences",
-			name: `${DIFF_TITLE} (activer ou désactiver)`,
-			editorCallback: (editor: Editor) => {
-				const view = getCmView(editor);
-				if (view) this.toggleDiff(view);
-			},
-		});
-
-		this.addCommand({
-			id: "next-difference",
-			name: "Différence suivante",
-			editorCallback: (editor: Editor) => {
-				const view = getCmView(editor);
-				if (view) void this.goToChange(view, 1);
-			},
-		});
-
-		this.addCommand({
-			id: "previous-difference",
-			name: "Différence précédente",
-			editorCallback: (editor: Editor) => {
-				const view = getCmView(editor);
-				if (view) void this.goToChange(view, -1);
-			},
+		this.addLocalizedCommand("previous-difference", (t) => t.previousDifference, (view) => {
+			void this.goToChange(view, -1);
 		});
 
 		this.registerEvent(
@@ -155,20 +136,20 @@ export default class JumpToSameParPlugin extends Plugin {
 				const openedAt = Date.now();
 				menu.addItem((item) =>
 					item
-						.setTitle(ALIGN_TITLE)
+						.setTitle(this.t.alignTitle)
 						.setIcon("arrow-left-right")
 						.onClick(() => void this.alignFrom(view, this.clickedPos(view, openedAt)))
 				);
 				menu.addItem((item) =>
 					item
-						.setTitle(SYNC_TITLE)
+						.setTitle(this.t.syncTitle)
 						.setIcon("arrow-up-down")
 						.setChecked(syncing)
 						.onClick(() => this.toggleSync(view))
 				);
 				menu.addItem((item) =>
 					item
-						.setTitle(DIFF_TITLE)
+						.setTitle(this.t.diffTitle)
 						.setIcon("git-compare")
 						.setChecked(diffing)
 						.onClick(() => this.toggleDiff(view))
@@ -179,10 +160,10 @@ export default class JumpToSameParPlugin extends Plugin {
 		// Une note fermée, ou remplacée par une autre dans son volet : repères et différences ne valent plus.
 		const check = () => {
 			if (this.activeSync && !this.intact(this.activeSync)) {
-				this.stopSync("Défilement simultané arrêté : l'une des deux notes a été fermée ou remplacée.");
+				this.stopSync(this.t.syncStoppedNoteGone);
 			}
 			if (this.activeDiff && !this.intact(this.activeDiff)) {
-				this.stopDiff("Différences masquées : l'une des deux notes a été fermée ou remplacée.");
+				this.stopDiff(this.t.diffStoppedNoteGone);
 			}
 		};
 		this.registerEvent(this.app.workspace.on("layout-change", check));
@@ -220,7 +201,7 @@ export default class JumpToSameParPlugin extends Plugin {
 	private editorsBeside(source: EditorView): NoteEditor[] | null {
 		const others = this.otherNotes(source);
 		if (others.length === 0) {
-			new Notice("Ouvrez l'autre version du texte dans un volet voisin.");
+			new Notice(this.t.openOtherVersion);
 			return null;
 		}
 		// En mode lecture, il n'y a pas d'éditeur CodeMirror à faire défiler.
@@ -230,7 +211,7 @@ export default class JumpToSameParPlugin extends Plugin {
 			if (view) editors.push({ note, view });
 		}
 		if (editors.length === 0) {
-			new Notice("L'autre texte est en mode lecture : passez-le en mode édition.");
+			new Notice(this.t.otherInReadingMode);
 			return null;
 		}
 		return editors;
@@ -266,7 +247,7 @@ export default class JumpToSameParPlugin extends Plugin {
 		const sourceUnits = extractUnits(source.state.doc.toJSON());
 		const index = unitIndexAt(sourceUnits, source.state.doc.lineAt(pos).number - 1);
 		if (index < 0) {
-			new Notice("Aucun paragraphe à aligner dans cette note.");
+			new Notice(this.t.nothingToAlign);
 			return;
 		}
 		const editors = this.editorsBeside(source);
@@ -280,7 +261,7 @@ export default class JumpToSameParPlugin extends Plugin {
 			if (match && (!best || match.score > best.match.score)) best = { target, units, match };
 		}
 		if (!best || best.match.score < MIN_SCORE) {
-			new Notice("Aucun paragraphe équivalent dans l'autre texte.");
+			new Notice(this.t.noEquivalent);
 			return;
 		}
 
@@ -323,66 +304,64 @@ export default class JumpToSameParPlugin extends Plugin {
 
 	private toggleSync(view: EditorView) {
 		if (this.activeSync?.session.involves(view)) {
-			this.stopSync("Défilement simultané désactivé.");
+			this.stopSync(this.t.syncOff);
 			return;
 		}
 		const note = this.noteOf(view);
 		if (!note) {
-			new Notice("Le défilement simultané ne fonctionne qu'entre deux notes ouvertes dans des volets.");
+			new Notice(this.t.syncNeedsPanes);
 			return;
 		}
-		const best = this.closestNote(view, "Les deux textes se ressemblent trop peu pour défiler ensemble.");
+		const best = this.closestNote(view, this.t.syncTooDifferent);
 		if (!best) return;
 
 		this.stopSync();
 		const session = new ScrollSync(view, best.view, best.anchors);
 		// Dans l'en-tête des deux volets : montre que leur défilement est lié, et permet de le délier.
-		this.activeSync = this.attach(session, [note, best.note], "arrow-up-down", "Arrêter le défilement simultané", () =>
-			this.stopSync("Défilement simultané désactivé.")
+		this.activeSync = this.attach(session, [note, best.note], "arrow-up-down", this.t.syncStopTooltip, () =>
+			this.stopSync(this.t.syncOff)
 		);
 		session.start(view);
-		new Notice("Défilement simultané activé.");
+		new Notice(this.t.syncOn);
 	}
 
 	private toggleDiff(view: EditorView) {
 		if (this.activeDiff?.session.involves(view)) {
-			this.stopDiff("Différences masquées.");
+			this.stopDiff(this.t.diffHidden);
 			return;
 		}
 		const note = this.noteOf(view);
 		if (!note) {
-			new Notice("Les différences ne se montrent qu'entre deux notes ouvertes dans des volets.");
+			new Notice(this.t.diffNeedsPanes);
 			return;
 		}
-		const best = this.closestNote(view, "Les deux textes se ressemblent trop peu pour être comparés.");
+		const best = this.closestNote(view, this.t.diffTooDifferent);
 		if (!best) return;
 
 		// À la git, il faut savoir laquelle des deux versions est l'ancienne : ce sera celle de gauche.
 		const [older, newer] = inReadingOrder({ note, view }, best);
 		this.stopDiff();
 		const session = new DiffSession(older.view, newer.view);
-		this.activeDiff = this.attach(session, [older.note, newer.note], "git-compare", "Masquer les différences", () =>
-			this.stopDiff("Différences masquées.")
+		this.activeDiff = this.attach(session, [older.note, newer.note], "git-compare", this.t.diffHideTooltip, () =>
+			this.stopDiff(this.t.diffHidden)
 		);
 		const diff = session.start();
-		const reference = older.note.file?.basename ?? "la première";
-		new Notice(
-			`${summary(diff)}.\n« ${reference} » fait l'ancienne version : en rouge ce qui en disparaît, en vert ce qui apparaît dans l'autre.`,
-			8000
-		);
+		const notice = `${this.t.summary(diff.changed, diff.added, diff.removed)}.
+${this.t.oldVersionNotice(older.note.file?.basename ?? null)}`;
+		new Notice(notice, 8000);
 	}
 
 	/** La différence suivante (`step` valant 1) ou précédente, amenée face à face dans les deux volets. */
 	private async goToChange(view: EditorView, step: 1 | -1) {
 		const active = this.activeDiff;
 		if (!active?.session.involves(view)) {
-			new Notice(`Activez d'abord « ${DIFF_TITLE} » sur les deux notes.`);
+			new Notice(this.t.enableDiffFirst);
 			return;
 		}
 		const doc = view.state.doc;
 		const row = active.session.nextChange(view, doc.lineAt(view.state.selection.main.head).number - 1, step);
 		if (!row) {
-			new Notice(step === 1 ? "Dernière différence atteinte." : "Première différence atteinte.");
+			new Notice(step === 1 ? this.t.lastDifference : this.t.firstDifference);
 			return;
 		}
 		const [first, second] = active.session.views;
@@ -442,5 +421,29 @@ export default class JumpToSameParPlugin extends Plugin {
 	private stopDiff(message?: string) {
 		this.detach(this.activeDiff, message);
 		this.activeDiff = null;
+	}
+}
+
+class SettingTab extends PluginSettingTab {
+	constructor(private readonly plugin: JumpToSameParPlugin) {
+		super(plugin.app, plugin);
+	}
+
+	display() {
+		this.containerEl.empty();
+		new Setting(this.containerEl)
+			.setName(this.plugin.t.languageName)
+			.setDesc(this.plugin.t.languageDesc)
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption("en", "English")
+					.addOption("fr", "Français")
+					.setValue(this.plugin.prefs.language)
+					.onChange(async (value) => {
+						if (!isLanguage(value)) return;
+						await this.plugin.setLanguage(value);
+						this.display();
+					})
+			);
 	}
 }

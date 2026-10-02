@@ -1,9 +1,9 @@
 {
 	"id": "jump-to-same-par",
 	"name": "Jump to Same Paragraph",
-	"version": "0.2.1",
+	"version": "0.3.0",
 	"minAppVersion": "1.4.0",
-	"description": "Deux versions d'un texte ouvertes côte à côte : clic droit sur un paragraphe, « Aligner les paragraphes », et son équivalent dans l'autre volet vient se placer à la même hauteur ; « Défilement simultané » les garde en face pendant qu'on fait défiler.",
+	"description": "Align a paragraph with its counterpart between two versions of a text open side by side, scroll both together and show the differences.",
 	"author": "Matthieu Thomas (mtthth)",
 	"authorUrl": "https://github.com/mtthth",
 	"isDesktopOnly": false
