@@ -1,20 +1,8 @@
 import { Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { flashLines } from "./highlight";
-import { alignmentQuality, alignUnits, extractUnits } from "./matching";
+import { alignmentQuality, alignUnits, anchorParagraph, extractUnits } from "./matching";
 import { counterpartY } from "./panes";
-
-/**
- * Les lignes pleines qui entourent `line` : le paragraphe, au sens où `extractUnits` découpe le texte
- * — il ne retient que les lignes portant du texte, les vides séparant donc les paragraphes.
- */
-function paragraphLines(doc: Text, line: number): { from: number; to: number } {
-	let from = line;
-	while (from > 1 && doc.line(from - 1).text.trim() !== "") from--;
-	let to = line;
-	while (to < doc.lines && doc.line(to + 1).text.trim() !== "") to++;
-	return { from, to };
-}
 
 /** Repères du défilement simultané : débuts des lignes appariées dans les deux documents, dans l'ordre. */
 export interface Anchors {
@@ -50,8 +38,26 @@ const RECOMPUTE_MIN_MS = 300;
 /** Où caler l'autre volet, et la paire de repères alors alignée. */
 interface Placement {
 	scrollTop: number;
-	/** Débuts des deux lignes alignées, dans l'ordre des vues de la session ; null sans aucun repère. */
-	focus: readonly [number, number] | null;
+	focus: Focus | null;
+}
+
+/** La paire de repères alignée : les repères de la session au moment de la mesure, et son rang parmi eux. */
+interface Focus {
+	positions: readonly [number, number][];
+	index: number;
+}
+
+/** Le paragraphe de la paire `focus` dans le texte `doc`, côté `side` de la session (lignes à partir de 0). */
+function focusParagraph(doc: Text, { positions, index }: Focus, side: number): { from: number; to: number } {
+	// Les repères ont pu être calculés sur un texte un peu plus long : ils ne valent qu'à peu près.
+	const lineOf = (k: number) => doc.lineAt(Math.min(positions[k][side], doc.length)).number - 1;
+	return anchorParagraph(
+		(line) => doc.line(line + 1).text,
+		doc.lines,
+		lineOf(index),
+		index > 0 ? lineOf(index - 1) : -1,
+		index + 1 < positions.length ? lineOf(index + 1) : doc.lines
+	);
 }
 
 /** Mesures d'un volet, en pixels. */
@@ -110,6 +116,8 @@ export class ScrollSync {
 	private leaderActiveAt = 0;
 	private ignoreUntil = 0;
 	private settleTimer = 0;
+	/** Alignements en cours : un alignement peut commencer avant que le précédent ait fini. */
+	private suspensions = 0;
 	private stopped = false;
 	/** Première ligne du paragraphe qui clignote dans chaque volet, pour ne le rejouer qu'au changement. */
 	private readonly flashedParagraphs: [number | null, number | null] = [null, null];
@@ -148,12 +156,14 @@ export class ScrollSync {
 	async suspend<T>(action: () => Promise<T>): Promise<T> {
 		// Une passe de rattrapage encore en attente écrirait au milieu de l'action.
 		window.clearTimeout(this.settleTimer);
+		this.suspensions++;
 		this.ignoreUntil = Infinity;
 		try {
 			return await action();
 		} finally {
-			// Les événements scroll des derniers défilements de l'action n'arrivent qu'à l'image suivante.
-			this.ignoreUntil = Date.now() + 100;
+			// Seul le dernier alignement à finir rend la main. Les événements scroll de ses derniers défilements
+			// n'arrivent qu'à l'image suivante.
+			if (--this.suspensions === 0) this.ignoreUntil = Date.now() + 100;
 		}
 	}
 
@@ -202,20 +212,20 @@ export class ScrollSync {
 	}
 
 	/**
-	 * Fait clignoter, dans chaque volet, la ligne de la paire alignée, seulement quand elle change :
+	 * Fait clignoter, dans chaque volet, le paragraphe de la paire alignée, seulement quand il change :
 	 * sinon le clignotement repartirait à chaque image et vaudrait un surlignage permanent.
 	 */
-	private flashFocus(focus: readonly [number, number] | null) {
+	private flashFocus(focus: Focus | null) {
 		this.views.forEach((view, k) => {
-			const doc = view.state.doc;
-			const line = focus ? doc.lineAt(Math.min(focus[k], doc.length)).number : null;
-			// Suivre le paragraphe et non la ligne : sinon il se rallumerait à chaque ligne franchie.
-			const paragraph = line === null ? null : paragraphLines(doc, line);
+			// Suivre le paragraphe et non la ligne : sinon, dans un texte aux lignes coupées, il se rallumerait à
+			// chaque ligne franchie.
+			const paragraph = focus ? focusParagraph(view.state.doc, focus, k) : null;
 			const first = paragraph ? paragraph.from : null;
 			if (first === this.flashedParagraphs[k]) return;
 			this.flashedParagraphs[k] = first;
-			// À l'arrêt (null), rien à effacer : le clignotement en cours s'éteint tout seul.
-			if (paragraph) flashLines(view, paragraph.from, paragraph.to);
+			// À l'arrêt (null), rien à effacer : le clignotement en cours s'éteint tout seul. CodeMirror compte les
+			// lignes à partir de 1.
+			if (paragraph) flashLines(view, paragraph.from + 1, paragraph.to + 1);
 		});
 	}
 
@@ -233,7 +243,7 @@ export class ScrollSync {
 		const screenY = counterpartY(from.top + offset, from, to, follower.defaultLineHeight);
 		return {
 			scrollTop: Math.min(Math.max(to.top + to.contentOffset + position - screenY, 0), to.maxScroll),
-			focus: focus < 0 ? null : this.anchors.positions[focus],
+			focus: focus < 0 ? null : { positions: this.anchors.positions, index: focus },
 		};
 	}
 

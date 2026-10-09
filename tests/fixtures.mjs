@@ -72,3 +72,27 @@ On passa rapidement sur les chiffres du trimestre, jugés décevants mais confor
 Le débat s'anima lorsqu'il fut question du déménagement des bureaux vers la zone industrielle, à quinze kilomètres du centre-ville.
 Plusieurs employés firent valoir qu'aucune ligne de bus ne desservait le nouveau site avant huit heures du matin.
 La séance fut levée sans décision, et chacun retourna à son poste en maugréant contre la direction.`;
+
+/**
+ * Le texte aux lignes coupées à `width` caractères, comme le ferait un éditeur sans retour à la ligne automatique ;
+ * `origin` donne, pour chaque ligne coupée, l'index de la ligne d'où elle vient.
+ */
+export function wrap(text, width) {
+	const lines = [];
+	const origin = [];
+	text.split("\n").forEach((line, i) => {
+		let current = "";
+		for (const word of line.split(" ")) {
+			if (current && `${current} ${word}`.length > width) {
+				lines.push(current);
+				origin.push(i);
+				current = word;
+			} else {
+				current = current ? `${current} ${word}` : word;
+			}
+		}
+		lines.push(current);
+		origin.push(i);
+	});
+	return { text: lines.join("\n"), origin };
+}

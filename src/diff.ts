@@ -35,6 +35,7 @@ export interface Diff {
 }
 
 export interface DiffInput {
+	/** Les lignes des deux versions, commentaires remplacés par des espaces : `withoutComments`. */
 	sourceLines: readonly string[];
 	targetLines: readonly string[];
 	/** Lignes (à partir de 0) qui portent du texte, dans l'ordre : `extractUnits`. */
@@ -74,7 +75,7 @@ function pairedRow(input: DiffInput, source: number, target: number): DiffRow {
 	const before = input.sourceLines[sourceLine];
 	const after = input.targetLines[targetLine];
 	const anchor = [sourceLine, targetLine] as const;
-	if (before.trim() === after.trim()) {
+	if (squeezed(before) === squeezed(after)) {
 		return { kind: "same", source: sourceLine, target: targetLine, sourceWords: [], targetWords: [], anchor };
 	}
 	const words = changedWords(before, after);
@@ -161,7 +162,15 @@ function identicalPairs(
 }
 
 function texts(lines: readonly string[], units: readonly number[], from: number, count: number): string[] {
-	return Array.from({ length: count }, (_, k) => lines[units[from + k]].trim());
+	return Array.from({ length: count }, (_, k) => squeezed(lines[units[from + k]]));
+}
+
+/**
+ * Le texte tel qu'il se lit, aux espaces près : un commentaire retiré laisse des espaces à sa place (voir
+ * `withoutComments`), et des espaces en plus ou en moins ne se verraient pas.
+ */
+function squeezed(text: string): string {
+	return text.trim().replace(/\s+/g, " ");
 }
 
 /** Les mots retirés et les mots ajoutés d'un paragraphe à l'autre. */
@@ -186,10 +195,48 @@ function tokenize(text: string): { words: string[]; spans: Span[] } {
 	const spans: Span[] = [];
 	TOKEN.lastIndex = 0;
 	for (let match = TOKEN.exec(text); match; match = TOKEN.exec(text)) {
-		words.push(match[0]);
+		// Toutes les suites d'espaces se valent, de même : sinon celles qu'un commentaire retiré laisse
+		// désaligneraient les mots autour.
+		words.push(/^\s/.test(match[0]) ? " " : match[0]);
 		spans.push({ from: match.index, to: match.index + match[0].length });
 	}
 	return { words, spans };
+}
+
+/**
+ * La différence suivante (`step` valant 1) ou précédente, vue du côté `side` (0 pour l'ancienne version) depuis la
+ * ligne `line` (à partir de 0) ; null s'il n'y en a plus dans ce sens. `shown` : la dernière différence montrée.
+ */
+export function adjacentChange(
+	rows: readonly DiffRow[],
+	side: 0 | 1,
+	line: number,
+	shown: DiffRow | null,
+	step: 1 | -1
+): DiffRow | null {
+	const lineOf = (row: DiffRow) => row.anchor[side];
+	// Dans l'ordre du volet d'où l'on part : un paragraphe supprimé et un ajouté qui se suivent d'un côté ne se
+	// suivent pas forcément de l'autre.
+	const changes = rows.filter((row) => row.kind !== "same").sort((x, y) => lineOf(x) - lineOf(y));
+	// Plusieurs différences peuvent tenir sur la même ligne de ce côté-ci, par exemple des paragraphes ajoutés
+	// là-bas : depuis la dernière montrée, on passe à sa voisine ; sinon, celles de la ligne du curseur viennent
+	// d'abord, faute de quoi aucune ne serait jamais atteinte depuis cette ligne.
+	const current = shown ? changes.indexOf(shown) : -1;
+	const index =
+		current >= 0 && lineOf(changes[current]) === line
+			? current + step
+			: step === 1
+			? changes.findIndex((row) => lineOf(row) >= line)
+			: lastIndex(changes, (row) => lineOf(row) <= line);
+	return index >= 0 && index < changes.length ? changes[index] : null;
+}
+
+/** Le dernier élément qui convient, faute de `findLastIndex` en ES2018. */
+function lastIndex<T>(items: readonly T[], matches: (item: T) => boolean): number {
+	for (let k = items.length - 1; k >= 0; k--) {
+		if (matches(items[k])) return k;
+	}
+	return -1;
 }
 
 /** Les couples d'indices de la plus longue sous-suite commune. */

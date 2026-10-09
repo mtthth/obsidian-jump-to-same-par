@@ -61,6 +61,9 @@ export default class JumpToSameParPlugin extends Plugin {
 	private rightClicks = new WeakMap<EditorView, { pos: number; time: number }>();
 	private activeSync: ActivePair<ScrollSync> | null = null;
 	private activeDiff: ActivePair<DiffSession> | null = null;
+	// L'alignement en cours : un nouveau l'interrompt, pour que deux alignements lancés coup sur coup (« Différence
+	// suivante » répétée) ne fassent pas défiler les mêmes volets vers deux endroits à la fois.
+	private alignment: AbortController | null = null;
 	readonly prefs: Settings = { language: DEFAULT_LANGUAGE };
 	// Les commandes déjà enregistrées, pour en changer le nom quand la langue change.
 	private commands: { name: (t: Strings) => string; command: { name: string } }[] = [];
@@ -72,7 +75,8 @@ export default class JumpToSameParPlugin extends Plugin {
 	async setLanguage(language: Language) {
 		this.prefs.language = language;
 		await this.saveData(this.prefs);
-		for (const { name, command } of this.commands) command.name = name(this.t);
+		// `addCommand` a fait précéder le nom de celui du plugin, comme dans toute la palette : on le garde.
+		for (const { name, command } of this.commands) command.name = `${this.manifest.name}: ${name(this.t)}`;
 	}
 
 	/** Enregistre une commande dont le nom dépend de la langue. */
@@ -171,6 +175,7 @@ export default class JumpToSameParPlugin extends Plugin {
 	}
 
 	onunload() {
+		this.alignment?.abort();
 		this.stopSync();
 		this.stopDiff();
 	}
@@ -289,15 +294,19 @@ export default class JumpToSameParPlugin extends Plugin {
 	) {
 		const sourcePos = source.state.doc.line(sourceLines[0]).from;
 		const targetPos = target.state.doc.line(targetLines[0]).from;
+		this.alignment?.abort();
+		const { signal } = (this.alignment = new AbortController());
 		const align = async () => {
 			// Lancée au clavier, la commande part du curseur, qui a pu sortir du volet : comme toute commande
 			// d'édition, on le ramène d'abord à l'écran.
-			await revealLine(source, reveal);
-			await alignLines(source, sourcePos, target, targetPos);
+			await revealLine(source, reveal, signal);
+			await alignLines(source, sourcePos, target, targetPos, signal);
 		};
 		// Le défilement simultané de ces deux volets ne doit pas défaire l'alignement pendant qu'il se fait.
 		const session = this.activeSync?.session;
 		await (session?.involves(source) && session.involves(target) ? session.suspend(align) : align());
+		// Interrompu : c'est l'alignement suivant qui montrera les siens.
+		if (signal.aborted) return;
 		flashLines(source, sourceLines[0], sourceLines[1]);
 		flashLines(target, targetLines[0], targetLines[1]);
 	}

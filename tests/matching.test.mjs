@@ -3,14 +3,16 @@ import assert from "node:assert/strict";
 import {
 	alignmentQuality,
 	alignUnits,
+	anchorParagraph,
 	extractUnits,
 	findEquivalent,
 	MIN_ALIGNMENT_QUALITY,
 	MIN_SCORE,
 	normalize,
 	unitIndexAt,
+	withoutComments,
 } from "../src/matching.ts";
-import { FIRST, OTHER_PROSE, PROOFREAD, UNRELATED } from "./fixtures.mjs";
+import { FIRST, OTHER_PROSE, PROOFREAD, UNRELATED, wrap } from "./fixtures.mjs";
 
 /** Index de la ligne qui commence par `start` (la n-ième si elle se répète). */
 function lineOf(text, start, occurrence = 0) {
@@ -72,6 +74,82 @@ test("extractUnits ignore les commentaires sur plusieurs lignes, pas les %% du c
 	const gramsOf = (text) => extractUnits([text])[0].grams;
 	assert.deepEqual(units[2].grams, gramsOf("Troisième"));
 	assert.deepEqual(units[3].grams, gramsOf("quatrième."));
+});
+
+test("un bloc de code n'est refermé que par une clôture comme la sienne", () => {
+	// Un ~~~ dans un bloc ```, un ``` dans un bloc ```` : du code, qui ne referme rien. Sans quoi la suite du texte
+	// passerait pour du code, et ses commentaires sur plusieurs lignes pour du texte.
+	const tail = ["Paragraphe.", "%%", "note de relecture sur plusieurs lignes", "%%", "Suite."];
+	for (const block of [
+		["```", "~~~", "```"],
+		["````", "```", "````"],
+		["~~~", "```", "~~~~"],
+		["```js", "code", "```"],
+	]) {
+		const units = extractUnits([...block, ...tail]).map((u) => u.line);
+		assert.ok(!units.includes(block.length + 2), `${block.join(" ")} : la note est prise pour du texte`);
+		assert.ok(units.includes(block.length) && units.includes(block.length + 4), block.join(" "));
+	}
+	// Une clôture suivie d'autre chose ne referme pas le bloc : la suite reste du code, où %% ne commente rien.
+	const lines = ["```", "```js", "%%", "pas un commentaire", "%%"];
+	assert.ok(extractUnits(lines).some((u) => u.line === 3));
+});
+
+test("withoutComments efface les commentaires sans déplacer le texte", () => {
+	const lines = [
+		"---",
+		"taux: 100%%",
+		"---",
+		"Avant %%note%% après.",
+		"Début %% d'une note",
+		"qui continue",
+		"et finit %% ici.",
+		"Le code `%%` reste, `a %% b` aussi.",
+		"```",
+		"printf(\"%% %%\");",
+		"```",
+	];
+	const visible = withoutComments(lines);
+	assert.deepEqual(
+		visible.map((line) => line.length),
+		lines.map((line) => line.length)
+	);
+	assert.deepEqual(visible, [
+		"---",
+		"taux: 100%%",
+		"---",
+		"Avant          après.",
+		"Début              ",
+		"            ",
+		"            ici.",
+		"Le code `%%` reste, `a %% b` aussi.",
+		"```",
+		"printf(\"%% %%\");",
+		"```",
+	]);
+});
+
+test("anchorParagraph : le paragraphe entier, sauf s'il porte d'autres repères", () => {
+	const at = (text, line, previous, next) => {
+		const lines = text.split("\n");
+		return anchorParagraph((n) => lines[n], lines.length, line, previous, next);
+	};
+	// Des paragraphes séparés par un simple retour à la ligne : la seule ligne du repère, et non tout le texte.
+	const proofread = lineOf(PROOFREAD, "Elle sortit sur la place");
+	assert.deepEqual(at(PROOFREAD, proofread, proofread - 1, proofread + 1), { from: proofread, to: proofread });
+	// Des lignes coupées : tout le paragraphe d'où elles viennent, qui ne porte qu'un repère.
+	const { text, origin } = wrap(FIRST, 60);
+	const first = origin.indexOf(lineOf(FIRST, "Le train arriva"));
+	const last = origin.lastIndexOf(lineOf(FIRST, "Le train arriva"));
+	assert.ok(last > first + 1, "le paragraphe doit tenir sur plusieurs lignes");
+	assert.deepEqual(at(text, first + 1, first - 2, last + 2), { from: first, to: last });
+	// … mais la seule ligne du repère si un autre repère y tombe.
+	assert.deepEqual(at(text, first + 1, first, last + 2), { from: first + 1, to: first + 1 });
+	assert.deepEqual(at(text, first + 1, first - 2, last), { from: first + 1, to: first + 1 });
+	// Le frontmatter collé au premier paragraphe n'en fait pas partie.
+	const title = lineOf(FIRST, "# Chapitre 3");
+	assert.deepEqual(at(FIRST, title, -1, lineOf(FIRST, "Le train arriva")), { from: title, to: title });
+	assert.deepEqual(at("---\ntitre: x\n---\nUn.\nDeux.", 3, -1, 5), { from: 3, to: 4 });
 });
 
 test("unitIndexAt prend la ligne visée, sinon la plus proche", () => {
@@ -154,24 +232,8 @@ test("un paragraphe ajouté s'aligne à l'endroit où il s'insère", () => {
 
 test("une version aux lignes coupées à 60 caractères retrouve ses paragraphes", () => {
 	// Chaque ligne longue devient plusieurs lignes courtes ; `origin` garde la ligne d'où elles viennent.
-	const wrapped = [];
-	const origin = [];
-	FIRST.split("\n").forEach((line, i) => {
-		const words = line.split(" ");
-		let current = "";
-		for (const word of words) {
-			if (current && `${current} ${word}`.length > 60) {
-				wrapped.push(current);
-				origin.push(i);
-				current = word;
-			} else {
-				current = current ? `${current} ${word}` : word;
-			}
-		}
-		wrapped.push(current);
-		origin.push(i);
-	});
-	const wrappedText = wrapped.join("\n");
+	const { text: wrappedText, origin } = wrap(FIRST, 60);
+	const wrapped = wrappedText.split("\n");
 
 	const paragraph = (start) => lineOf(FIRST, start);
 	for (const [start, equivalent] of [

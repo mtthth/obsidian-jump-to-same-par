@@ -12,15 +12,20 @@ interface Placement {
 // début ou en fin de document. Chaque passe mesure et corrige : quelques-unes suffisent à converger.
 const MAX_PASSES = 6;
 
-/** Fait défiler `target` pour amener la ligne de `targetPos` à la hauteur de celle de `sourcePos`. */
+/**
+ * Fait défiler `target` pour amener la ligne de `targetPos` à la hauteur de celle de `sourcePos`. `signal` : de
+ * quoi l'interrompre, quand un autre alignement prend la main.
+ */
 export async function alignLines(
 	source: EditorView,
 	sourcePos: number,
 	target: EditorView,
-	targetPos: number
+	targetPos: number,
+	signal?: AbortSignal
 ): Promise<void> {
 	for (let pass = 0; pass < MAX_PASSES; pass++) {
 		const [from, to] = await Promise.all([measure(source, sourcePos), measure(target, targetPos)]);
+		if (signal?.aborted) return;
 
 		// Le début d'un long paragraphe peut être sorti du volet : on vise alors le haut du volet, plutôt
 		// que d'envoyer hors de vue un équivalent peut-être plus court.
@@ -35,9 +40,10 @@ export async function alignLines(
 }
 
 /** Fait défiler `view` pour ramener dans le volet la ligne de `pos`, si elle en est entièrement sortie. */
-export async function revealLine(view: EditorView, pos: number): Promise<void> {
+export async function revealLine(view: EditorView, pos: number, signal?: AbortSignal): Promise<void> {
 	for (let pass = 0; pass < MAX_PASSES; pass++) {
 		const line = await measure(view, pos);
+		if (signal?.aborted) return;
 		if (line.bottom > line.pane.top && line.top < line.pane.bottom) return;
 		// Au milieu du volet : place pour le paragraphe, et pour son équivalent en face.
 		if (Math.abs(scrollBy(view, line.top - (line.pane.top + line.pane.bottom) / 2)) < 1) return;

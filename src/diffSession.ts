@@ -1,8 +1,8 @@
 import { Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { buildDiff, Diff, DiffRow } from "./diff";
+import { adjacentChange, buildDiff, Diff, DiffRow } from "./diff";
 import { DiffMarks, showDiffMarks } from "./diffMarks";
-import { alignUnits, extractUnits } from "./matching";
+import { alignUnits, extractUnits, withoutComments } from "./matching";
 
 // Le diff est refait une fois la frappe arrêtée (et au moins dix fois la durée du dernier calcul, pour les
 // très longs textes).
@@ -15,8 +15,9 @@ export function diffBetween(source: Text, target: Text): Diff {
 	const sourceUnits = extractUnits(sourceLines);
 	const targetUnits = extractUnits(targetLines);
 	return buildDiff({
-		sourceLines,
-		targetLines,
+		// Les commentaires ne comptent pas : ajouter une note de relecture ne modifie pas un paragraphe.
+		sourceLines: withoutComments(sourceLines),
+		targetLines: withoutComments(targetLines),
 		sourceUnits: sourceUnits.map((unit) => unit.line),
 		targetUnits: targetUnits.map((unit) => unit.line),
 		pairs: alignUnits(sourceUnits, targetUnits),
@@ -66,21 +67,10 @@ export class DiffSession {
 
 	/** La différence suivante (`step` valant 1) ou précédente, à partir de la ligne `line` de `view`. */
 	nextChange(view: EditorView, line: number, step: 1 | -1): DiffRow | null {
-		const side = view === this.views[0] ? 0 : 1;
-		const lineOf = (row: DiffRow) => row.anchor[side];
-		// Dans l'ordre du volet d'où l'on part : un paragraphe supprimé et un ajouté qui se suivent d'un côté
-		// ne se suivent pas forcément de l'autre.
-		const changes = this.diff.rows.filter((row) => row.kind !== "same").sort((x, y) => lineOf(x) - lineOf(y));
-		// Depuis la dernière différence montrée, on passe à sa voisine : plusieurs peuvent tenir sur la même
-		// ligne de ce côté-ci, par exemple des paragraphes ajoutés là-bas.
-		const current = this.shown ? changes.indexOf(this.shown) : -1;
-		let index = current >= 0 && lineOf(changes[current]) === line ? current + step : -1;
-		if (index < 0) {
-			const beyond = (row: DiffRow) => (step === 1 ? lineOf(row) > line : lineOf(row) < line);
-			index = step === 1 ? changes.findIndex(beyond) : lastIndex(changes, beyond);
-		}
-		this.shown = index >= 0 && index < changes.length ? changes[index] : null;
-		return this.shown;
+		const row = adjacentChange(this.diff.rows, view === this.views[0] ? 0 : 1, line, this.shown, step);
+		// Au bout, on garde la dernière montrée : c'est d'elle que repartira l'autre sens.
+		if (row) this.shown = row;
+		return row;
 	}
 
 	private refresh(): Diff {
@@ -93,14 +83,6 @@ export class DiffSession {
 		this.delay = Math.max(RECOMPUTE_MS, 10 * (Date.now() - started));
 		return this.diff;
 	}
-}
-
-/** Le dernier élément qui convient, faute de `findLastIndex` en ES2018. */
-function lastIndex<T>(items: readonly T[], matches: (item: T) => boolean): number {
-	for (let k = items.length - 1; k >= 0; k--) {
-		if (matches(items[k])) return k;
-	}
-	return -1;
 }
 
 /** Ce qu'il y a à marquer d'un côté : `side` vaut 0 pour l'ancienne version, 1 pour la nouvelle. */

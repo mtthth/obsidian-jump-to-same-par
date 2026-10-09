@@ -62,33 +62,98 @@ export function normalize(text: string): string {
 
 /** Les lignes qui portent du texte, frontmatter et commentaires exclus. */
 export function extractUnits(lines: readonly string[]): TextUnit[] {
+	const visible = withoutComments(lines);
 	const units: TextUnit[] = [];
-	// Un commentaire Obsidian (%% … %%) peut courir sur plusieurs lignes, mais pas dans un bloc de code.
-	let inComment = false;
-	let inCode = false;
 	for (let line = frontmatterEnd(lines); line < lines.length; line++) {
-		let raw = lines[line];
-		if (!inComment && /^\s*(?:```|~~~)/.test(raw)) inCode = !inCode;
-		else if (!inCode) {
-			// De part et d'autre de chaque %%, texte et commentaire alternent ; un %% dans du code en ligne
-			// n'en délimite aucun.
-			const pieces = raw.replace(/`[^`]*`/g, (code) => code.replace(/%%/g, " ")).split("%%");
-			raw = pieces.filter((_, k) => k % 2 === (inComment ? 1 : 0)).join(" ");
-			if (pieces.length % 2 === 0) inComment = !inComment;
-		}
-		const text = normalize(raw);
+		// Les %% qui restent (code en ligne, bloc de code) ne commentent rien : `normalize` ne doit pas y voir de
+		// commentaire.
+		const text = normalize(visible[line].replace(/%%/g, " "));
 		if (text) units.push({ line, grams: trigrams(text) });
 	}
 	return units;
 }
 
+/**
+ * Les lignes sans leurs commentaires Obsidian (%% … %%), qui peuvent courir sur plusieurs lignes mais pas dans un
+ * bloc de code : chaque caractère d'un commentaire, délimiteurs compris, devient une espace, pour que les positions
+ * restent celles du texte. Le frontmatter, où %% ne commente rien, reste tel quel.
+ */
+export function withoutComments(lines: readonly string[]): string[] {
+	const visible = lines.slice();
+	let inComment = false;
+	// La clôture qui a ouvert le bloc de code en cours : seule une clôture du même caractère, au moins aussi longue
+	// et seule sur sa ligne, le referme (un ~~~ dans un bloc ```, un ``` dans un bloc ````, n'en sont pas).
+	let fence: string | null = null;
+	for (let line = frontmatterEnd(lines); line < lines.length; line++) {
+		const raw = lines[line];
+		if (!inComment) {
+			const marker = /^\s*(`{3,}|~{3,})/.exec(raw)?.[1];
+			if (fence === null && marker) {
+				fence = marker;
+				continue;
+			}
+			if (fence !== null) {
+				if (marker && marker[0] === fence[0] && marker.length >= fence.length && raw.trim() === marker) fence = null;
+				continue;
+			}
+		}
+		// De part et d'autre de chaque %%, texte et commentaire alternent ; un %% dans du code en ligne n'en
+		// délimite aucun (remplacé à longueur égale, pour garder les positions).
+		const code = raw.replace(/`[^`]*`/g, (span) => span.replace(/%%/g, "  "));
+		let text = "";
+		let from = 0;
+		for (let at = code.indexOf("%%"); ; at = code.indexOf("%%", from)) {
+			const to = at < 0 ? raw.length : at;
+			text += inComment ? " ".repeat(to - from) : raw.slice(from, to);
+			if (at < 0) break;
+			text += "  ";
+			inComment = !inComment;
+			from = at + 2;
+		}
+		visible[line] = text;
+	}
+	return visible;
+}
+
+const FRONTMATTER_OPEN = /^---\s*$/;
+const FRONTMATTER_CLOSE = /^(?:---|\.\.\.)\s*$/;
+
 /** Première ligne après le frontmatter, que l'aperçu en direct masque derrière les propriétés. */
 function frontmatterEnd(lines: readonly string[]): number {
-	if (lines.length === 0 || !/^---\s*$/.test(lines[0])) return 0;
+	if (lines.length === 0 || !FRONTMATTER_OPEN.test(lines[0])) return 0;
 	for (let i = 1; i < lines.length; i++) {
-		if (/^(?:---|\.\.\.)\s*$/.test(lines[i])) return i + 1;
+		if (FRONTMATTER_CLOSE.test(lines[i])) return i + 1;
 	}
 	return 0;
+}
+
+/**
+ * Le paragraphe d'un repère du défilement simultané, à faire clignoter (lignes à partir de 0) : les lignes pleines
+ * qui entourent la ligne `line`, frontmatter exclu, si aucun autre repère n'y tombe ; sinon la seule ligne `line`,
+ * dans un texte dont les paragraphes ne sont séparés que par un retour à la ligne. `previous` et `next` : les lignes
+ * des repères voisins, -1 et `count` s'il n'y en a pas.
+ */
+export function anchorParagraph(
+	text: (line: number) => string,
+	count: number,
+	line: number,
+	previous: number,
+	next: number
+): { from: number; to: number } {
+	let from = line;
+	while (from > 0 && text(from - 1).trim() !== "") from--;
+	let to = line;
+	while (to + 1 < count && text(to + 1).trim() !== "") to++;
+	// Un premier paragraphe collé au frontmatter : celui-ci n'en fait pas partie.
+	if (from === 0 && FRONTMATTER_OPEN.test(text(0))) {
+		for (let k = 1; k < line; k++) {
+			if (FRONTMATTER_CLOSE.test(text(k))) {
+				from = k + 1;
+				break;
+			}
+		}
+	}
+	return previous >= from || next <= to ? { from: line, to: line } : { from, to };
 }
 
 // Des trigrammes de caractères plutôt que des mots : une coquille corrigée ou un mot accordé change
