@@ -62,24 +62,28 @@ export function normalize(text: string): string {
 
 /** Les lignes qui portent du texte, frontmatter et commentaires exclus. */
 export function extractUnits(lines: readonly string[]): TextUnit[] {
-	const visible = withoutComments(lines);
+	const comments = commentSpans(lines);
 	const units: TextUnit[] = [];
 	for (let line = frontmatterEnd(lines); line < lines.length; line++) {
+		let raw = lines[line];
+		for (let k = comments[line].length - 1; k >= 0; k--) {
+			const { from, to } = comments[line][k];
+			raw = `${raw.slice(0, from)} ${raw.slice(to)}`;
+		}
 		// Les %% qui restent (code en ligne, bloc de code) ne commentent rien : `normalize` ne doit pas y voir de
 		// commentaire.
-		const text = normalize(visible[line].replace(/%%/g, " "));
+		const text = normalize(raw.replace(/%%/g, " "));
 		if (text) units.push({ line, grams: trigrams(text) });
 	}
 	return units;
 }
 
 /**
- * Les lignes sans leurs commentaires Obsidian (%% … %%), qui peuvent courir sur plusieurs lignes mais pas dans un
- * bloc de code : chaque caractère d'un commentaire, délimiteurs compris, devient une espace, pour que les positions
- * restent celles du texte. Le frontmatter, où %% ne commente rien, reste tel quel.
+ * Les commentaires Obsidian (%% … %%) de chaque ligne, délimiteurs compris. Un commentaire peut courir sur plusieurs
+ * lignes, mais pas dans un bloc de code ; le frontmatter, où %% ne commente rien, n'en a pas.
  */
-export function withoutComments(lines: readonly string[]): string[] {
-	const visible = lines.slice();
+export function commentSpans(lines: readonly string[]): { from: number; to: number }[][] {
+	const comments = lines.map((): { from: number; to: number }[] => []);
 	let inComment = false;
 	// La clôture qui a ouvert le bloc de code en cours : seule une clôture du même caractère, au moins aussi longue
 	// et seule sur sa ligne, le referme (un ~~~ dans un bloc ```, un ``` dans un bloc ````, n'en sont pas).
@@ -87,7 +91,9 @@ export function withoutComments(lines: readonly string[]): string[] {
 	for (let line = frontmatterEnd(lines); line < lines.length; line++) {
 		const raw = lines[line];
 		if (!inComment) {
-			const marker = /^\s*(`{3,}|~{3,})/.exec(raw)?.[1];
+			// Comme en CommonMark, ``` suivi d'un autre accent grave sur la ligne est du code en ligne
+			// (« ```grep``` cherche… »), pas l'ouverture d'un bloc.
+			const marker = /^\s*(`{3,}(?!.*`)|~{3,})/.exec(raw)?.[1];
 			if (fence === null && marker) {
 				fence = marker;
 				continue;
@@ -100,19 +106,15 @@ export function withoutComments(lines: readonly string[]): string[] {
 		// De part et d'autre de chaque %%, texte et commentaire alternent ; un %% dans du code en ligne n'en
 		// délimite aucun (remplacé à longueur égale, pour garder les positions).
 		const code = raw.replace(/`[^`]*`/g, (span) => span.replace(/%%/g, "  "));
-		let text = "";
-		let from = 0;
-		for (let at = code.indexOf("%%"); ; at = code.indexOf("%%", from)) {
-			const to = at < 0 ? raw.length : at;
-			text += inComment ? " ".repeat(to - from) : raw.slice(from, to);
-			if (at < 0) break;
-			text += "  ";
+		let start = 0;
+		for (let at = code.indexOf("%%"); at >= 0; at = code.indexOf("%%", at + 2)) {
+			if (inComment) comments[line].push({ from: start, to: at + 2 });
+			else start = at;
 			inComment = !inComment;
-			from = at + 2;
 		}
-		visible[line] = text;
+		if (inComment) comments[line].push({ from: start, to: raw.length });
 	}
-	return visible;
+	return comments;
 }
 
 const FRONTMATTER_OPEN = /^---\s*$/;
@@ -129,9 +131,9 @@ function frontmatterEnd(lines: readonly string[]): number {
 
 /**
  * Le paragraphe d'un repère du défilement simultané, à faire clignoter (lignes à partir de 0) : les lignes pleines
- * qui entourent la ligne `line`, frontmatter exclu, si aucun autre repère n'y tombe ; sinon la seule ligne `line`,
- * dans un texte dont les paragraphes ne sont séparés que par un retour à la ligne. `previous` et `next` : les lignes
- * des repères voisins, -1 et `count` s'il n'y en a pas.
+ * qui entourent la ligne `line`, frontmatter exclu, si elles ne portent que ce repère ou ne sont qu'un paragraphe
+ * coupé à la main ; sinon la seule ligne `line`, dans un texte dont les paragraphes ne sont séparés que par un retour
+ * à la ligne. `previous` et `next` : les lignes des repères voisins, -1 et `count` s'il n'y en a pas.
  */
 export function anchorParagraph(
 	text: (line: number) => string,
@@ -145,15 +147,40 @@ export function anchorParagraph(
 	let to = line;
 	while (to + 1 < count && text(to + 1).trim() !== "") to++;
 	// Un premier paragraphe collé au frontmatter : celui-ci n'en fait pas partie.
-	if (from === 0 && FRONTMATTER_OPEN.test(text(0))) {
+	if (FRONTMATTER_OPEN.test(text(0))) {
 		for (let k = 1; k < line; k++) {
 			if (FRONTMATTER_CLOSE.test(text(k))) {
-				from = k + 1;
+				from = Math.max(from, k + 1);
 				break;
 			}
 		}
 	}
-	return previous >= from || next <= to ? { from: line, to: line } : { from, to };
+	if (previous < from && next > to) return { from, to };
+	return hardWrapped(text, from, to) ? { from, to } : { from: line, to: line };
+}
+
+// Au-delà, une ligne n'a pas été coupée à la main : c'est un paragraphe entier.
+const MAX_WRAPPED_LINE = 100;
+
+/**
+ * Les lignes `from` à `to` sont-elles un paragraphe coupé à la main ? Chacune, sauf la dernière, a alors été
+ * arrêtée parce que le mot suivant n'y tenait plus : avec lui, elle dépasserait la plus longue. Des répliques ou
+ * des paragraphes qui se suivent sans ligne vide n'ont pas cette forme.
+ */
+function hardWrapped(text: (line: number) => string, from: number, to: number): boolean {
+	const lines: string[] = [];
+	let width = 0;
+	for (let k = from; k <= to; k++) {
+		const line = text(k).replace(/\s+$/, "");
+		if (line.length > MAX_WRAPPED_LINE) return false;
+		lines.push(line);
+		width = Math.max(width, line.length);
+	}
+	for (let k = 0; k + 1 < lines.length; k++) {
+		const nextWord = /\S*/.exec(lines[k + 1].replace(/^\s+/, ""))![0];
+		if (lines[k].length + 1 + nextWord.length <= width) return false;
+	}
+	return true;
 }
 
 // Des trigrammes de caractères plutôt que des mots : une coquille corrigée ou un mot accordé change

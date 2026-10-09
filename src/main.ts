@@ -105,7 +105,9 @@ export default class JumpToSameParPlugin extends Plugin {
 			// Le texte change : les différences montrées ne valent plus, on les refait.
 			EditorView.updateListener.of((update) => {
 				const diff = this.activeDiff;
-				if (update.docChanged && diff?.session.involves(update.view)) diff.session.textChanged();
+				if (update.docChanged && diff?.session.involves(update.view)) {
+					diff.session.textChanged(update.view, update.changes);
+				}
 			}),
 			ViewPlugin.define((view) => {
 				const onContextMenu = (event: MouseEvent) => {

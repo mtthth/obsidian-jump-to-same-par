@@ -1,30 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import { Text } from "@codemirror/state";
-import { build } from "esbuild";
-import { FIRST, PROOFREAD } from "./fixtures.mjs";
+import { bundle, until, wait } from "./bundle.mjs";
+import { FIRST, PROOFREAD, wrap } from "./fixtures.mjs";
 
-// alignment.ts et scrollSync.ts importent CodeMirror et d'autres modules du plugin : on les assemble avant de les
-// charger. Les éditeurs, eux, sont simulés (voir `fakeView`).
-const { outputFiles } = await build({
-	stdin: {
-		contents: `export { alignLines, revealLine } from "./src/alignment";
-export { anchorsBetween, ScrollSync } from "./src/scrollSync";`,
-		resolveDir: fileURLToPath(new URL("..", import.meta.url)),
-		loader: "ts",
-	},
-	bundle: true,
-	format: "esm",
-	platform: "node",
-	write: false,
-	logLevel: "silent",
-});
-const { alignLines, revealLine, anchorsBetween, ScrollSync } = await import(
-	`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString("base64")}`
-);
-// Le plugin passe par `window` pour ses minuteries, comme toute page.
-globalThis.window = globalThis;
+// Les éditeurs, eux, sont simulés (voir `fakeView`).
+const { alignLines, revealLine, anchorsBetween, ScrollSync } = await bundle(`
+	export { alignLines, revealLine } from "./src/alignment";
+	export { anchorsBetween, ScrollSync } from "./src/scrollSync";
+`);
 
 const LINE_HEIGHT = 20;
 
@@ -35,6 +19,7 @@ const LINE_HEIGHT = 20;
 function fakeView(lines, { top = 0, height = 200 } = {}) {
 	const doc = Text.of(lines);
 	const flashes = [];
+	let measuring = false;
 	const scrollDOM = Object.assign(new EventTarget(), {
 		scrollTop: 0,
 		clientHeight: height,
@@ -62,9 +47,19 @@ function fakeView(lines, { top = 0, height = 200 } = {}) {
 			return { top: line * LINE_HEIGHT, bottom: (line + 1) * LINE_HEIGHT };
 		},
 		requestMeasure(request) {
-			setTimeout(() => request.write?.(request.read(this), this), 0);
+			setTimeout(() => {
+				const value = request.read(this);
+				measuring = true;
+				try {
+					request.write?.(value, this);
+				} finally {
+					measuring = false;
+				}
+			}, 0);
 		},
 		dispatch({ effects }) {
+			// Comme CodeMirror, qui refuse qu'on modifie un éditeur pendant sa propre mise à jour.
+			if (measuring) throw new Error("Calls to EditorView.update are not allowed while an update is in progress");
 			if (effects?.value) flashes.push(effects.value);
 		},
 	};
@@ -72,8 +67,6 @@ function fakeView(lines, { top = 0, height = 200 } = {}) {
 
 /** Cent lignes qui ne se ressemblent pas trop, pour que chacune ait son équivalent net. */
 const LINES = Array.from({ length: 100 }, (_, i) => `Ligne ${i} : ${(i * 7919).toString(36)} ${(i * 104729).toString(36)}`);
-
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("alignLines amène la ligne équivalente en face", async () => {
 	const source = fakeView(LINES);
@@ -124,7 +117,7 @@ test("le défilement simultané reste suspendu jusqu'à la fin du dernier aligne
 	await second;
 	await wait(150);
 	a.scrollDOM.scrollTo({ top: 800 });
-	await wait(50);
+	await until(() => b.scrollDOM.scrollTop === 800);
 	sync.stop();
 	assert.equal(b.scrollDOM.scrollTop, 800, "les deux alignements sont finis");
 });
@@ -135,10 +128,33 @@ test("le défilement simultané fait clignoter le paragraphe aligné, pas tout l
 	const b = fakeView(PROOFREAD.split("\n"));
 	const sync = new ScrollSync(a, b, anchorsBetween(a.state.doc, b.state.doc));
 	sync.start(a);
-	await wait(50);
+	await until(() => b.flashes.length >= 1);
 	a.scrollDOM.scrollTo({ top: 200 });
-	await wait(50);
+	await until(() => b.flashes.length >= 2);
 	sync.stop();
 	assert.ok(b.flashes.length >= 2, `clignotements : ${JSON.stringify(b.flashes)}`);
 	for (const { from, to } of b.flashes) assert.equal(to, from, `lignes ${from} à ${to}`);
+});
+
+test("deux versions aux lignes coupées clignotent paragraphe par paragraphe", async () => {
+	// Chaque ligne coupée a son équivalent dans l'autre version : toutes sont des repères.
+	const first = wrap(FIRST, 60);
+	const edited = wrap(FIRST.replace("un peu avant midi", "peu avant midi"), 60);
+	const a = fakeView(first.text.split("\n"));
+	const b = fakeView(edited.text.split("\n"));
+	const sync = new ScrollSync(a, b, anchorsBetween(a.state.doc, b.state.doc));
+	sync.start(a);
+	for (let top = 0; top <= a.scrollDOM.scrollHeight; top += 10) {
+		a.scrollDOM.scrollTo({ top });
+		await wait(5);
+	}
+	await until(() => a.flashes.length >= 5);
+	sync.stop();
+	assert.ok(a.flashes.length >= 5, `clignotements : ${JSON.stringify(a.flashes)}`);
+	// Un paragraphe coupé en plusieurs lignes clignote en entier, jamais ligne par ligne.
+	for (const { from, to } of a.flashes) {
+		const origin = first.origin[from - 1];
+		const lines = first.origin.filter((line) => line === origin).length;
+		if (lines > 1) assert.equal(to - from + 1, lines, `lignes ${from} à ${to}`);
+	}
 });

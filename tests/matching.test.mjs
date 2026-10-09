@@ -4,13 +4,13 @@ import {
 	alignmentQuality,
 	alignUnits,
 	anchorParagraph,
+	commentSpans,
 	extractUnits,
 	findEquivalent,
 	MIN_ALIGNMENT_QUALITY,
 	MIN_SCORE,
 	normalize,
 	unitIndexAt,
-	withoutComments,
 } from "../src/matching.ts";
 import { FIRST, OTHER_PROSE, PROOFREAD, UNRELATED, wrap } from "./fixtures.mjs";
 
@@ -93,9 +93,12 @@ test("un bloc de code n'est refermé que par une clôture comme la sienne", () =
 	// Une clôture suivie d'autre chose ne referme pas le bloc : la suite reste du code, où %% ne commente rien.
 	const lines = ["```", "```js", "%%", "pas un commentaire", "%%"];
 	assert.ok(extractUnits(lines).some((u) => u.line === 3));
+	// Du code en ligne en début de ligne n'ouvre aucun bloc : un accent grave suit ``` sur la ligne.
+	const inline = ["```grep``` cherche un motif.", "```sed``` le remplace.", "", ...tail];
+	assert.ok(!extractUnits(inline).some((u) => u.line === 5), "la note est prise pour du texte");
 });
 
-test("withoutComments efface les commentaires sans déplacer le texte", () => {
+test("commentSpans situe les commentaires, délimiteurs compris", () => {
 	const lines = [
 		"---",
 		"taux: 100%%",
@@ -106,30 +109,17 @@ test("withoutComments efface les commentaires sans déplacer le texte", () => {
 		"et finit %% ici.",
 		"Le code `%%` reste, `a %% b` aussi.",
 		"```",
-		"printf(\"%% %%\");",
+		'printf("%% %%");',
 		"```",
 	];
-	const visible = withoutComments(lines);
+	const spans = commentSpans(lines);
 	assert.deepEqual(
-		visible.map((line) => line.length),
-		lines.map((line) => line.length)
+		spans.map((line, k) => line.map(({ from, to }) => lines[k].slice(from, to))),
+		[[], [], [], ["%%note%%"], ["%% d'une note"], ["qui continue"], ["et finit %%"], [], [], [], []]
 	);
-	assert.deepEqual(visible, [
-		"---",
-		"taux: 100%%",
-		"---",
-		"Avant          après.",
-		"Début              ",
-		"            ",
-		"            ici.",
-		"Le code `%%` reste, `a %% b` aussi.",
-		"```",
-		"printf(\"%% %%\");",
-		"```",
-	]);
 });
 
-test("anchorParagraph : le paragraphe entier, sauf s'il porte d'autres repères", () => {
+test("anchorParagraph : le paragraphe entier, sauf dans un texte sans lignes vides", () => {
 	const at = (text, line, previous, next) => {
 		const lines = text.split("\n");
 		return anchorParagraph((n) => lines[n], lines.length, line, previous, next);
@@ -137,19 +127,22 @@ test("anchorParagraph : le paragraphe entier, sauf s'il porte d'autres repères"
 	// Des paragraphes séparés par un simple retour à la ligne : la seule ligne du repère, et non tout le texte.
 	const proofread = lineOf(PROOFREAD, "Elle sortit sur la place");
 	assert.deepEqual(at(PROOFREAD, proofread, proofread - 1, proofread + 1), { from: proofread, to: proofread });
-	// Des lignes coupées : tout le paragraphe d'où elles viennent, qui ne porte qu'un repère.
+	// De même pour des répliques qui se suivent.
+	const yes = lineOf(FIRST, "— Oui.");
+	assert.deepEqual(at(FIRST, yes, yes - 1, yes + 1), { from: yes, to: yes });
+	// Des lignes coupées : tout le paragraphe d'où elles viennent, qu'il ne porte que ce repère…
 	const { text, origin } = wrap(FIRST, 60);
 	const first = origin.indexOf(lineOf(FIRST, "Le train arriva"));
 	const last = origin.lastIndexOf(lineOf(FIRST, "Le train arriva"));
 	assert.ok(last > first + 1, "le paragraphe doit tenir sur plusieurs lignes");
 	assert.deepEqual(at(text, first + 1, first - 2, last + 2), { from: first, to: last });
-	// … mais la seule ligne du repère si un autre repère y tombe.
-	assert.deepEqual(at(text, first + 1, first, last + 2), { from: first + 1, to: first + 1 });
-	assert.deepEqual(at(text, first + 1, first - 2, last), { from: first + 1, to: first + 1 });
-	// Le frontmatter collé au premier paragraphe n'en fait pas partie.
+	// … ou que ses autres lignes en soient aussi, l'autre version étant coupée de même.
+	assert.deepEqual(at(text, first + 1, first, first + 2), { from: first, to: last });
+	// Le frontmatter collé au premier paragraphe n'en fait pas partie, même s'il contient une ligne vide.
 	const title = lineOf(FIRST, "# Chapitre 3");
 	assert.deepEqual(at(FIRST, title, -1, lineOf(FIRST, "Le train arriva")), { from: title, to: title });
 	assert.deepEqual(at("---\ntitre: x\n---\nUn.\nDeux.", 3, -1, 5), { from: 3, to: 4 });
+	assert.deepEqual(at("---\ntitre: x\n\ntags: y\n---\nUn.\nDeux.\n\nSuite.", 5, -1, 8), { from: 5, to: 6 });
 });
 
 test("unitIndexAt prend la ligne visée, sinon la plus proche", () => {

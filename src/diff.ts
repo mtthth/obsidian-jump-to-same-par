@@ -35,9 +35,14 @@ export interface Diff {
 }
 
 export interface DiffInput {
-	/** Les lignes des deux versions, commentaires remplacés par des espaces : `withoutComments`. */
 	sourceLines: readonly string[];
 	targetLines: readonly string[];
+	/**
+	 * Les commentaires de chaque ligne, `commentSpans` : ils ne comptent pas, ajouter une note de relecture ne
+	 * modifie pas un paragraphe.
+	 */
+	sourceComments: readonly (readonly Span[])[];
+	targetComments: readonly (readonly Span[])[];
 	/** Lignes (à partir de 0) qui portent du texte, dans l'ordre : `extractUnits`. */
 	sourceUnits: readonly number[];
 	targetUnits: readonly number[];
@@ -74,11 +79,13 @@ function pairedRow(input: DiffInput, source: number, target: number): DiffRow {
 	const targetLine = input.targetUnits[target];
 	const before = input.sourceLines[sourceLine];
 	const after = input.targetLines[targetLine];
+	const beforeComments = input.sourceComments[sourceLine];
+	const afterComments = input.targetComments[targetLine];
 	const anchor = [sourceLine, targetLine] as const;
-	if (squeezed(before) === squeezed(after)) {
+	if (readable(before, beforeComments) === readable(after, afterComments)) {
 		return { kind: "same", source: sourceLine, target: targetLine, sourceWords: [], targetWords: [], anchor };
 	}
-	const words = changedWords(before, after);
+	const words = changedWords(before, beforeComments, after, afterComments);
 	return {
 		kind: "changed",
 		source: sourceLine,
@@ -153,37 +160,67 @@ function identicalPairs(
 	const n = sourceTo - sourceFrom;
 	const m = targetTo - targetFrom;
 	if (n <= 0 || m <= 0 || n * m > MAX_GAP_CELLS) return [];
-	const before = texts(input.sourceLines, input.sourceUnits, sourceFrom, n);
-	const after = texts(input.targetLines, input.targetUnits, targetFrom, m);
+	const before = texts(input.sourceLines, input.sourceComments, input.sourceUnits, sourceFrom, n);
+	const after = texts(input.targetLines, input.targetComments, input.targetUnits, targetFrom, m);
 	return longestCommon(before, after).map(([source, target]) => ({
 		source: sourceFrom + source,
 		target: targetFrom + target,
 	}));
 }
 
-function texts(lines: readonly string[], units: readonly number[], from: number, count: number): string[] {
-	return Array.from({ length: count }, (_, k) => squeezed(lines[units[from + k]]));
+function texts(
+	lines: readonly string[],
+	comments: readonly (readonly Span[])[],
+	units: readonly number[],
+	from: number,
+	count: number
+): string[] {
+	return Array.from({ length: count }, (_, k) => readable(lines[units[from + k]], comments[units[from + k]]));
 }
 
-/**
- * Le texte tel qu'il se lit, aux espaces près : un commentaire retiré laisse des espaces à sa place (voir
- * `withoutComments`), et des espaces en plus ou en moins ne se verraient pas.
- */
-function squeezed(text: string): string {
-	return text.trim().replace(/\s+/g, " ");
+// Ce qui, après un commentaire, se colle au mot qui le précède : « la place %%nom ?%%, sous » se lit « la place,
+// sous ».
+const CLOSING = /[\s.,;:!?…)\]}»”’]/;
+
+/** La ligne telle qu'elle se lit, sans ses commentaires `comments`. */
+function readable(line: string, comments: readonly Span[]): string {
+	let text = line;
+	for (let k = comments.length - 1; k >= 0; k--) {
+		let { from } = comments[k];
+		const { to } = comments[k];
+		// Suivi d'une espace, d'une ponctuation qui ferme ou de la fin de la ligne, un commentaire emporte les
+		// espaces qui le précèdent ; devant un mot, il les laisse pour l'en séparer.
+		if (to >= text.length || CLOSING.test(text[to])) {
+			while (from > 0 && /[ \t]/.test(text[from - 1])) from--;
+		}
+		text = text.slice(0, from) + text.slice(to);
+	}
+	return text.trim();
+}
+
+/** La ligne dont les commentaires `comments` sont remplacés par des espaces : les mots y gardent leurs positions. */
+function blanked(line: string, comments: readonly Span[]): string {
+	let text = line;
+	for (const { from, to } of comments) text = text.slice(0, from) + " ".repeat(to - from) + text.slice(to);
+	return text;
 }
 
 /** Les mots retirés et les mots ajoutés d'un paragraphe à l'autre. */
-function changedWords(before: string, after: string): { source: Span[]; target: Span[] } {
-	const source = tokenize(before);
-	const target = tokenize(after);
+function changedWords(
+	before: string,
+	beforeComments: readonly Span[],
+	after: string,
+	afterComments: readonly Span[]
+): { source: Span[]; target: Span[] } {
+	const source = tokenize(blanked(before, beforeComments));
+	const target = tokenize(blanked(after, afterComments));
 	if (source.words.length * target.words.length > MAX_WORD_CELLS) return { source: [], target: [] };
 	const kept = longestCommon(source.words, target.words);
 	const keptSource = new Set(kept.map(([index]) => index));
 	const keptTarget = new Set(kept.map(([, index]) => index));
 	return {
-		source: spansOf(before, source.spans, (index) => !keptSource.has(index)),
-		target: spansOf(after, target.spans, (index) => !keptTarget.has(index)),
+		source: spansOf(before, source, (index) => !keptSource.has(index)),
+		target: spansOf(after, target, (index) => !keptTarget.has(index)),
 	};
 }
 
@@ -195,9 +232,9 @@ function tokenize(text: string): { words: string[]; spans: Span[] } {
 	const spans: Span[] = [];
 	TOKEN.lastIndex = 0;
 	for (let match = TOKEN.exec(text); match; match = TOKEN.exec(text)) {
-		// Toutes les suites d'espaces se valent, de même : sinon celles qu'un commentaire retiré laisse
-		// désaligneraient les mots autour.
-		words.push(/^\s/.test(match[0]) ? " " : match[0]);
+		// Les suites d'espaces se valent, quelle que soit leur longueur : sinon celles qui remplacent un commentaire
+		// désaligneraient les mots autour. Une espace insécable, elle, reste ce qu'elle est.
+		words.push(/^[ \t]+$/.test(match[0]) ? " " : match[0]);
 		spans.push({ from: match.index, to: match.index + match[0].length });
 	}
 	return { words, spans };
@@ -265,23 +302,21 @@ function longestCommon(a: readonly string[], b: readonly string[]): [number, num
 }
 
 /**
- * Les intervalles à marquer : deux mots changés que seuls des espaces séparent n'en font qu'un, et une marque
- * ne porte jamais sur de seuls espaces, qui ne se verraient pas.
+ * Les intervalles à marquer dans la ligne `line` : deux mots changés que seuls des espaces y séparent n'en font
+ * qu'un — un commentaire entre eux les garde distincts, pour qu'aucune marque ne le couvre —, et une marque ne
+ * porte jamais sur de seuls espaces, qui ne se verraient pas.
  */
-function spansOf(text: string, spans: readonly Span[], changed: (index: number) => boolean): Span[] {
+function spansOf(
+	line: string,
+	tokens: { words: readonly string[]; spans: readonly Span[] },
+	changed: (index: number) => boolean
+): Span[] {
 	const marks: Span[] = [];
-	for (let index = 0; index < spans.length; index++) {
-		if (!changed(index)) continue;
+	tokens.spans.forEach((span, index) => {
+		if (!changed(index) || /^\s/.test(tokens.words[index])) return;
 		const last = marks[marks.length - 1];
-		if (last && text.slice(last.to, spans[index].from).trim() === "") last.to = spans[index].to;
-		else marks.push({ from: spans[index].from, to: spans[index].to });
-	}
-	return marks.map((mark) => trimmed(text, mark)).filter((mark) => mark.to > mark.from);
-}
-
-function trimmed(text: string, span: Span): Span {
-	let { from, to } = span;
-	while (from < to && /\s/.test(text[from])) from++;
-	while (to > from && /\s/.test(text[to - 1])) to--;
-	return { from, to };
+		if (last && line.slice(last.to, span.from).trim() === "") last.to = span.to;
+		else marks.push({ from: span.from, to: span.to });
+	});
+	return marks;
 }

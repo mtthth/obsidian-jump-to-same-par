@@ -8,7 +8,7 @@ An [Obsidian](https://obsidian.md) plugin for working on two versions of the sam
 
 - **Align paragraphs**: right-click a paragraph, then choose "Align paragraphs". Its counterpart in the other pane scrolls to the same height.
 - **Synchronized scrolling**: both panes stay facing each other while you scroll one of them.
-- **Show differences**: git-style, modified, added and removed paragraphs are highlighted in both versions, along with the words that change inside a modified paragraph. A notice sums it up ("8 paragraphs changed, 1 added, 1 removed").
+- **Show differences**: git-style, modified, added and removed paragraphs are highlighted in both versions, along with the words that change inside a modified paragraph. A notice sums it up ("8 paragraphs changed, 1 added, 1 removed"). Adding or removing a `%% … %%` comment does not count as a change.
 - **Next / previous difference**: jumps from one difference to the next.
 
 ## Usage
