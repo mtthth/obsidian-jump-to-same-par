@@ -102,8 +102,18 @@ test("une note de relecture ajoutée ou retirée ne modifie pas un paragraphe", 
 		const diff = diffOf(before.join("\n"), after.join("\n"));
 		assert.deepEqual([diff.changed, diff.added, diff.removed], [0, 0, 0], after.join(" / "));
 	}
-	const question = diffOf("— Tu viens ? demanda-t-elle.", "— Tu viens%%ton ?%% ? demanda-t-elle.");
-	assert.deepEqual([question.changed, question.added, question.removed], [0, 0, 0]);
+	// Les espaces autour d'une note tiennent à la note : celles d'avant un point d'exclamation restent du texte.
+	for (const [before, after] of [
+		["— Tu viens ? demanda-t-elle.", "— Tu viens%%ton ?%% ? demanda-t-elle."],
+		["Il pleuvait enfin !", "Il pleuvait enfin  %%trop ?%%!"],
+		["Il pleuvait enfin !", "Il pleuvait enfin %%trop ?%% !"],
+		["Il resta sur la terrasse ?", "Il resta sur la terrasse %%nom ?%%?"],
+	]) {
+		const diff = diffOf(before, after);
+		assert.deepEqual([diff.changed, diff.added, diff.removed], [0, 0, 0], after);
+	}
+	// Une espace ajoutée, sans note, reste une différence.
+	assert.equal(diffOf("Elle sortit sur la place, sous les platanes.", "Elle sortit sur la place , sous les platanes.").changed, 1);
 });
 
 test("les mots changés autour d'une note de relecture sont repérés à leur place", () => {

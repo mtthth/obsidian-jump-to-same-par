@@ -127,9 +127,11 @@ test("anchorParagraph : le paragraphe entier, sauf dans un texte sans lignes vid
 	// Des paragraphes séparés par un simple retour à la ligne : la seule ligne du repère, et non tout le texte.
 	const proofread = lineOf(PROOFREAD, "Elle sortit sur la place");
 	assert.deepEqual(at(PROOFREAD, proofread, proofread - 1, proofread + 1), { from: proofread, to: proofread });
-	// De même pour des répliques qui se suivent.
+	// De même pour des répliques qui se suivent, même deux seulement.
 	const yes = lineOf(FIRST, "— Oui.");
 	assert.deepEqual(at(FIRST, yes, yes - 1, yes + 1), { from: yes, to: yes });
+	const waiting = lineOf(FIRST, "— Vous attendez");
+	assert.deepEqual(at(FIRST, waiting, waiting - 2, waiting + 1), { from: waiting, to: waiting });
 	// Des lignes coupées : tout le paragraphe d'où elles viennent, qu'il ne porte que ce repère…
 	const { text, origin } = wrap(FIRST, 60);
 	const first = origin.indexOf(lineOf(FIRST, "Le train arriva"));
@@ -138,6 +140,11 @@ test("anchorParagraph : le paragraphe entier, sauf dans un texte sans lignes vid
 	assert.deepEqual(at(text, first + 1, first - 2, last + 2), { from: first, to: last });
 	// … ou que ses autres lignes en soient aussi, l'autre version étant coupée de même.
 	assert.deepEqual(at(text, first + 1, first, first + 2), { from: first, to: last });
+	// Une réplique coupée en deux lignes clignote en entier, sans les répliques qui la suivent.
+	const narrow = wrap(FIRST, 50);
+	const question = narrow.origin.indexOf(lineOf(FIRST, "— Tu es sûre"));
+	assert.equal(narrow.origin[question + 1], narrow.origin[question], "la réplique doit tenir sur deux lignes");
+	assert.deepEqual(at(narrow.text, question, question - 2, question + 1), { from: question, to: question + 1 });
 	// Le frontmatter collé au premier paragraphe n'en fait pas partie, même s'il contient une ligne vide.
 	const title = lineOf(FIRST, "# Chapitre 3");
 	assert.deepEqual(at(FIRST, title, -1, lineOf(FIRST, "Le train arriva")), { from: title, to: title });

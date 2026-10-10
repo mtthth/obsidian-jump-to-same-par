@@ -151,10 +151,11 @@ test("deux versions aux lignes coupées clignotent paragraphe par paragraphe", a
 	await until(() => a.flashes.length >= 5);
 	sync.stop();
 	assert.ok(a.flashes.length >= 5, `clignotements : ${JSON.stringify(a.flashes)}`);
-	// Un paragraphe coupé en plusieurs lignes clignote en entier, jamais ligne par ligne.
+	// Un paragraphe coupé en plusieurs lignes clignote en entier, jamais ligne par ligne, et seul.
 	for (const { from, to } of a.flashes) {
 		const origin = first.origin[from - 1];
 		const lines = first.origin.filter((line) => line === origin).length;
+		assert.equal(new Set(first.origin.slice(from - 1, to)).size, 1, `lignes ${from} à ${to}`);
 		if (lines > 1) assert.equal(to - from + 1, lines, `lignes ${from} à ${to}`);
 	}
 });

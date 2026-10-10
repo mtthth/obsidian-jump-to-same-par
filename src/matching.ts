@@ -131,9 +131,10 @@ function frontmatterEnd(lines: readonly string[]): number {
 
 /**
  * Le paragraphe d'un repère du défilement simultané, à faire clignoter (lignes à partir de 0) : les lignes pleines
- * qui entourent la ligne `line`, frontmatter exclu, si elles ne portent que ce repère ou ne sont qu'un paragraphe
- * coupé à la main ; sinon la seule ligne `line`, dans un texte dont les paragraphes ne sont séparés que par un retour
- * à la ligne. `previous` et `next` : les lignes des repères voisins, -1 et `count` s'il n'y en a pas.
+ * qui entourent la ligne `line`, frontmatter exclu et jusqu'à la prochaine réplique, puce ou titre, si elles ne
+ * portent que ce repère ou ne sont qu'un paragraphe coupé à la main ; sinon la seule ligne `line`, dans un texte dont
+ * les paragraphes ne sont séparés que par un retour à la ligne. `previous` et `next` : les lignes des repères
+ * voisins, -1 et `count` s'il n'y en a pas.
  */
 export function anchorParagraph(
 	text: (line: number) => string,
@@ -143,9 +144,9 @@ export function anchorParagraph(
 	next: number
 ): { from: number; to: number } {
 	let from = line;
-	while (from > 0 && text(from - 1).trim() !== "") from--;
+	while (from > 0 && !OPENS.test(text(from)) && text(from - 1).trim() !== "") from--;
 	let to = line;
-	while (to + 1 < count && text(to + 1).trim() !== "") to++;
+	while (to + 1 < count && !OPENS.test(text(to + 1)) && text(to + 1).trim() !== "") to++;
 	// Un premier paragraphe collé au frontmatter : celui-ci n'en fait pas partie.
 	if (FRONTMATTER_OPEN.test(text(0))) {
 		for (let k = 1; k < line; k++) {
@@ -158,6 +159,10 @@ export function anchorParagraph(
 	if (previous < from && next > to) return { from, to };
 	return hardWrapped(text, from, to) ? { from, to } : { from: line, to: line };
 }
+
+// Une ligne qui commence ainsi ouvre un paragraphe, même sans ligne vide avant elle : une réplique, une puce, un
+// titre.
+const OPENS = /^\s*(?:[—–]|[-*+]|#{1,6}|\d+[.)])\s/;
 
 // Au-delà, une ligne n'a pas été coupée à la main : c'est un paragraphe entier.
 const MAX_WRAPPED_LINE = 100;

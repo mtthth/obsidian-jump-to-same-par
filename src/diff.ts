@@ -82,7 +82,7 @@ function pairedRow(input: DiffInput, source: number, target: number): DiffRow {
 	const beforeComments = input.sourceComments[sourceLine];
 	const afterComments = input.targetComments[targetLine];
 	const anchor = [sourceLine, targetLine] as const;
-	if (readable(before, beforeComments) === readable(after, afterComments)) {
+	if (sameReading(reading(before, beforeComments), reading(after, afterComments))) {
 		return { kind: "same", source: sourceLine, target: targetLine, sourceWords: [], targetWords: [], anchor };
 	}
 	const words = changedWords(before, beforeComments, after, afterComments);
@@ -160,42 +160,60 @@ function identicalPairs(
 	const n = sourceTo - sourceFrom;
 	const m = targetTo - targetFrom;
 	if (n <= 0 || m <= 0 || n * m > MAX_GAP_CELLS) return [];
-	const before = texts(input.sourceLines, input.sourceComments, input.sourceUnits, sourceFrom, n);
-	const after = texts(input.targetLines, input.targetComments, input.targetUnits, targetFrom, m);
-	return longestCommon(before, after).map(([source, target]) => ({
+	const before = readings(input.sourceLines, input.sourceComments, input.sourceUnits, sourceFrom, n);
+	const after = readings(input.targetLines, input.targetComments, input.targetUnits, targetFrom, m);
+	return longestCommon(before, after, sameReading).map(([source, target]) => ({
 		source: sourceFrom + source,
 		target: targetFrom + target,
 	}));
 }
 
-function texts(
+function readings(
 	lines: readonly string[],
 	comments: readonly (readonly Span[])[],
 	units: readonly number[],
 	from: number,
 	count: number
-): string[] {
-	return Array.from({ length: count }, (_, k) => readable(lines[units[from + k]], comments[units[from + k]]));
+): Reading[] {
+	return Array.from({ length: count }, (_, k) => reading(lines[units[from + k]], comments[units[from + k]]));
 }
 
-// Ce qui, après un commentaire, se colle au mot qui le précède : « la place %%nom ?%%, sous » se lit « la place,
-// sous ».
-const CLOSING = /[\s.,;:!?…)\]}»”’]/;
+/**
+ * Une ligne telle qu'elle se lit : ses mots et ses signes, et ce qui les sépare. Là où se glisse un commentaire,
+ * l'écart vaut `null` : les espaces qui l'entourent (« place %%nom ?%%, sous », « enfin %%ton%% ! ») tiennent à la
+ * note, pas au texte.
+ */
+interface Reading {
+	words: string[];
+	gaps: (string | null)[];
+}
 
-/** La ligne telle qu'elle se lit, sans ses commentaires `comments`. */
-function readable(line: string, comments: readonly Span[]): string {
-	let text = line;
-	for (let k = comments.length - 1; k >= 0; k--) {
-		let { from } = comments[k];
-		const { to } = comments[k];
-		// Suivi d'une espace, d'une ponctuation qui ferme ou de la fin de la ligne, un commentaire emporte les
-		// espaces qui le précèdent ; devant un mot, il les laisse pour l'en séparer.
-		if (to >= text.length || CLOSING.test(text[to])) {
-			while (from > 0 && /[ \t]/.test(text[from - 1])) from--;
+function reading(line: string, comments: readonly Span[]): Reading {
+	const words: string[] = [];
+	const gaps: (string | null)[] = [];
+	const text = blanked(line, comments);
+	let end = -1;
+	TOKEN.lastIndex = 0;
+	for (let match = TOKEN.exec(text); match; match = TOKEN.exec(text)) {
+		if (/^\s/.test(match[0])) continue;
+		if (end >= 0) {
+			const from = end;
+			const to = match.index;
+			gaps.push(comments.some((comment) => comment.from < to && comment.to > from) ? null : line.slice(from, to));
 		}
-		text = text.slice(0, from) + text.slice(to);
+		words.push(match[0]);
+		end = match.index + match[0].length;
 	}
-	return text.trim();
+	return { words, gaps };
+}
+
+/** Deux lignes qui se lisent de même, commentaires mis à part : sans commentaire, deux lignes égales aux bords près. */
+function sameReading(a: Reading, b: Reading): boolean {
+	return (
+		a.words.length === b.words.length &&
+		a.words.every((word, k) => word === b.words[k]) &&
+		a.gaps.every((gap, k) => gap === null || b.gaps[k] === null || gap === b.gaps[k])
+	);
 }
 
 /** La ligne dont les commentaires `comments` sont remplacés par des espaces : les mots y gardent leurs positions. */
@@ -276,8 +294,12 @@ function lastIndex<T>(items: readonly T[], matches: (item: T) => boolean): numbe
 	return -1;
 }
 
-/** Les couples d'indices de la plus longue sous-suite commune. */
-function longestCommon(a: readonly string[], b: readonly string[]): [number, number][] {
+/** Les couples d'indices de la plus longue sous-suite commune, `equal` disant quels éléments se valent. */
+function longestCommon<T>(
+	a: readonly T[],
+	b: readonly T[],
+	equal: (x: T, y: T) => boolean = (x, y) => x === y
+): [number, number][] {
 	const n = a.length;
 	const m = b.length;
 	const width = m + 1;
@@ -285,7 +307,7 @@ function longestCommon(a: readonly string[], b: readonly string[]): [number, num
 	for (let i = n - 1; i >= 0; i--) {
 		for (let j = m - 1; j >= 0; j--) {
 			lengths[i * width + j] =
-				a[i] === b[j]
+				equal(a[i], b[j])
 					? lengths[(i + 1) * width + j + 1] + 1
 					: Math.max(lengths[(i + 1) * width + j], lengths[i * width + j + 1]);
 		}
@@ -294,7 +316,7 @@ function longestCommon(a: readonly string[], b: readonly string[]): [number, num
 	let i = 0;
 	let j = 0;
 	while (i < n && j < m) {
-		if (a[i] === b[j]) common.push([i++, j++]);
+		if (equal(a[i], b[j])) common.push([i++, j++]);
 		else if (lengths[(i + 1) * width + j] >= lengths[i * width + j + 1]) i++;
 		else j++;
 	}
